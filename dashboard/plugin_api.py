@@ -610,7 +610,17 @@ def _load_mem0_config(config: Dict[str, Any]) -> Dict[str, Any]:
         file_cfg.get("mode") == "oss"
         or isinstance(file_cfg.get("oss"), dict)
     )
-    oss_config = file_cfg.get("oss") if isinstance(file_cfg.get("oss"), dict) else None
+    # Issue #3: if mode=oss but no "oss" sub-block, treat the whole file_cfg
+    # (minus meta-keys) as the OSS config rather than silently falling back to
+    # Memory() defaults which would ignore all user configuration.
+    _oss_block = file_cfg.get("oss")
+    if isinstance(_oss_block, dict):
+        oss_config: Optional[Dict[str, Any]] = _oss_block
+    elif oss_mode:
+        # Flat layout: entire file is the config (minus the "mode" key).
+        oss_config = {k: v for k, v in file_cfg.items() if k != "mode"}
+    else:
+        oss_config = None
 
     return {
         "config_path": str(config_path),
@@ -707,28 +717,41 @@ def _mem0_payload(
 
             oss_cfg = mem0_cfg["oss_config"]
             if oss_cfg:
-                mem0_config: Any = oss_cfg
+                # Issues #1 & #2: hoist import, catch ImportError explicitly,
+                # give a clean user-facing error instead of silently falling
+                # through to Memory(config=raw_dict) which always crashes.
                 try:
                     from mem0.configs.base import MemoryConfig as _MemoryConfig  # type: ignore
-                    mem0_config = _MemoryConfig.model_validate(oss_cfg)
+                except ImportError:
+                    base["error"] = "Could not import MemoryConfig from mem0. Ensure mem0ai is installed and up to date."
+                    return base
+                try:
+                    mem0_config: Any = _MemoryConfig.model_validate(oss_cfg)
                 except Exception:
                     try:
-                        from mem0.configs.base import MemoryConfig as _MemoryConfig  # type: ignore
                         mem0_config = _MemoryConfig(**oss_cfg)
-                    except Exception:
-                        pass  # fall through with raw dict; will surface real error
+                    except Exception as cfg_exc:
+                        base["error"] = f"Invalid OSS config in mem0.json: {_safe_error(cfg_exc)}"
+                        return base
                 client = Memory(config=mem0_config)
             else:
                 client = Memory()
+            # Issue #4: apply agent_id filter consistently only when explicitly set
+            # (not the default "hermes") so OSS and cloud return the same scope.
+            oss_filters: Dict[str, Any] = {"user_id": mem0_cfg["user_id"]}
+            if mem0_cfg["agent_id"] and mem0_cfg["agent_id"] != "hermes":
+                oss_filters["agent_id"] = mem0_cfg["agent_id"]
             if search:
                 response = client.search(
                     query=search,
-                    filters={"user_id": mem0_cfg["user_id"], "agent_id": mem0_cfg["agent_id"]},
+                    filters=oss_filters,
                     top_k=limit,
+                    rerank=mem0_cfg["rerank"],  # Issue #5: forward rerank to OSS search
                 )
             else:
                 response = client.get_all(
-                    filters={"user_id": mem0_cfg["user_id"], "agent_id": mem0_cfg["agent_id"]},
+                    filters=oss_filters,
+                    top_k=limit,  # Issue #7: pass limit server-side, not just client-side
                 )
         else:
             # Cloud path: use MemoryClient with an API key.
