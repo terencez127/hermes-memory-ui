@@ -604,10 +604,20 @@ def _load_mem0_config(config: Dict[str, Any]) -> Dict[str, Any]:
     rerank = pick("rerank", "MEM0_RERANK", True)
     if isinstance(rerank, str):
         rerank = rerank.strip().lower() not in {"0", "false", "no", "off"}
+
+    # Detect OSS mode: mem0.json has "mode": "oss" or contains an "oss" block.
+    oss_mode = (
+        file_cfg.get("mode") == "oss"
+        or isinstance(file_cfg.get("oss"), dict)
+    )
+    oss_config = file_cfg.get("oss") if isinstance(file_cfg.get("oss"), dict) else None
+
     return {
         "config_path": str(config_path),
         "config_exists": config_path.exists(),
         "api_key_present": bool(api_key),
+        "oss_mode": oss_mode,
+        "oss_config": oss_config,
         "user_id": pick("user_id", "MEM0_USER_ID", "hermes-user"),
         "agent_id": pick("agent_id", "MEM0_AGENT_ID", "hermes"),
         "rerank": rerank,
@@ -671,6 +681,7 @@ def _mem0_payload(
         "label": "Mem0 memory",
         "provider_configured": provider == "mem0",
         "mode": "read-only",
+        "mem0_mode": "oss" if mem0_cfg["oss_mode"] else "cloud",
         "config_path": mem0_cfg["config_path"],
         "config_exists": mem0_cfg["config_exists"],
         "api_key_present": mem0_cfg["api_key_present"],
@@ -686,22 +697,47 @@ def _mem0_payload(
     }
 
     try:
-        if not mem0_cfg["api_key_present"]:
-            base["error"] = "Mem0 API key not configured. Set MEM0_API_KEY in $HERMES_HOME/.env or the process environment."
-            return base
+        if mem0_cfg["oss_mode"]:
+            # OSS / self-hosted path: use mem0.Memory with the full config from mem0.json.
+            try:
+                from mem0 import Memory  # type: ignore
+            except ImportError:
+                base["error"] = "mem0 package not installed in the dashboard environment. Install mem0ai."
+                return base
 
-        try:
-            from mem0 import MemoryClient  # type: ignore
-        except ImportError:
-            base["error"] = "mem0 package not installed in the dashboard environment. Install mem0ai."
-            return base
-
-        client = MemoryClient(api_key=mem0_cfg["_api_key"])
-        filters = {"user_id": mem0_cfg["user_id"]}
-        if search:
-            response = client.search(query=search, filters=filters, rerank=mem0_cfg["rerank"], top_k=limit)
+            oss_cfg = mem0_cfg["oss_config"]
+            client = Memory(config=oss_cfg) if oss_cfg else Memory()
+            if search:
+                response = client.search(
+                    query=search,
+                    user_id=mem0_cfg["user_id"],
+                    agent_id=mem0_cfg["agent_id"],
+                    limit=limit,
+                )
+            else:
+                response = client.get_all(
+                    user_id=mem0_cfg["user_id"],
+                    agent_id=mem0_cfg["agent_id"],
+                )
         else:
-            response = client.get_all(filters=filters)
+            # Cloud path: use MemoryClient with an API key.
+            if not mem0_cfg["api_key_present"]:
+                base["error"] = "Mem0 API key not configured. Set MEM0_API_KEY in $HERMES_HOME/.env or the process environment."
+                return base
+
+            try:
+                from mem0 import MemoryClient  # type: ignore
+            except ImportError:
+                base["error"] = "mem0 package not installed in the dashboard environment. Install mem0ai."
+                return base
+
+            client = MemoryClient(api_key=mem0_cfg["_api_key"])
+            filters = {"user_id": mem0_cfg["user_id"]}
+            if search:
+                response = client.search(query=search, filters=filters, rerank=mem0_cfg["rerank"], top_k=limit)
+            else:
+                response = client.get_all(filters=filters)
+
         all_memories = [_normalize_mem0_memory(item, index) for index, item in enumerate(_unwrap_mem0_results(response))]
         base["total_memories"] = len(all_memories)
         base["memories"] = _filter_mem0_memories(all_memories, None, limit)
