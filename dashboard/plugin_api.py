@@ -706,18 +706,29 @@ def _mem0_payload(
                 return base
 
             oss_cfg = mem0_cfg["oss_config"]
-            client = Memory(config=oss_cfg) if oss_cfg else Memory()
+            if oss_cfg:
+                mem0_config: Any = oss_cfg
+                try:
+                    from mem0.configs.base import MemoryConfig as _MemoryConfig  # type: ignore
+                    mem0_config = _MemoryConfig.model_validate(oss_cfg)
+                except Exception:
+                    try:
+                        from mem0.configs.base import MemoryConfig as _MemoryConfig  # type: ignore
+                        mem0_config = _MemoryConfig(**oss_cfg)
+                    except Exception:
+                        pass  # fall through with raw dict; will surface real error
+                client = Memory(config=mem0_config)
+            else:
+                client = Memory()
             if search:
                 response = client.search(
                     query=search,
-                    user_id=mem0_cfg["user_id"],
-                    agent_id=mem0_cfg["agent_id"],
-                    limit=limit,
+                    filters={"user_id": mem0_cfg["user_id"], "agent_id": mem0_cfg["agent_id"]},
+                    top_k=limit,
                 )
             else:
                 response = client.get_all(
-                    user_id=mem0_cfg["user_id"],
-                    agent_id=mem0_cfg["agent_id"],
+                    filters={"user_id": mem0_cfg["user_id"], "agent_id": mem0_cfg["agent_id"]},
                 )
         else:
             # Cloud path: use MemoryClient with an API key.
