@@ -607,7 +607,7 @@ def _load_mem0_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Detect OSS mode: mem0.json has "mode": "oss" or contains an "oss" block.
     oss_mode = (
-        file_cfg.get("mode") == "oss"
+        str(file_cfg.get("mode") or "").strip().lower() == "oss"
         or isinstance(file_cfg.get("oss"), dict)
     )
     # Issue #3: if mode=oss but no "oss" sub-block, treat the whole file_cfg
@@ -626,7 +626,7 @@ def _load_mem0_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "config_path": str(config_path),
         "config_exists": config_path.exists(),
         "api_key_present": bool(api_key),
-        "oss_mode": oss_mode,
+        "mem0_mode": "oss" if oss_mode else "cloud",
         "oss_config": oss_config,
         "user_id": pick("user_id", "MEM0_USER_ID", "hermes-user"),
         "agent_id": pick("agent_id", "MEM0_AGENT_ID", "hermes"),
@@ -691,7 +691,7 @@ def _mem0_payload(
         "label": "Mem0 memory",
         "provider_configured": provider == "mem0",
         "mode": "read-only",
-        "mem0_mode": "oss" if mem0_cfg["oss_mode"] else "cloud",
+        "mem0_mode": mem0_cfg["mem0_mode"],
         "config_path": mem0_cfg["config_path"],
         "config_exists": mem0_cfg["config_exists"],
         "api_key_present": mem0_cfg["api_key_present"],
@@ -707,7 +707,7 @@ def _mem0_payload(
     }
 
     try:
-        if mem0_cfg["oss_mode"]:
+        if mem0_cfg["mem0_mode"] == "oss":
             # OSS / self-hosted path: use mem0.Memory with the full config from mem0.json.
             try:
                 from mem0 import Memory  # type: ignore
@@ -2444,6 +2444,7 @@ async def status() -> Dict[str, Any]:
             "config_path": mem0_cfg["config_path"],
             "config_exists": mem0_cfg["config_exists"],
             "api_key_present": mem0_cfg["api_key_present"],
+            "mem0_mode": mem0_cfg["mem0_mode"],
             "user_id": mem0_cfg["user_id"],
             "agent_id": mem0_cfg["agent_id"],
             "provider_configured": _dig(config, "memory", "provider", default=None) == "mem0",
